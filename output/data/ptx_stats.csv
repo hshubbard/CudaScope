@@ -1,0 +1,2 @@
+kernel_name,total_instr,global_loads,global_stores,shared_loads,shared_stores,arithmetic,branch,special,other,memory_ratio,branch_ratio,arith_ratio
+tiled_transpose,46,1,1,1,1,14,3,1,24,0.043478260869565216,0.06521739130434782,0.30434782608695654

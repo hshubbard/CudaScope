@@ -1,0 +1,14 @@
+[
+  {
+    "name": "tiled_transpose",
+    "code": "__global__ void tiled_transpose(const float* __restrict__ in,\n                                 float* __restrict__ out,\n                                 int width)\n{\n    __shared__ float tile[32][33]; // +1 col to avoid shared memory bank conflicts\n\n    int x = blockIdx.x * 32 + threadIdx.x;\n    int y = blockIdx.y * 32 + threadIdx.y;\n\n    if (x < width && y < width)\n        tile[threadIdx.y][threadIdx.x] = in[y * width + x];\n    __syncthreads();\n\n    x = blockIdx.y * 32 + threadIdx.x;\n    y = blockIdx.x * 32 + threadIdx.y;\n\n    if (x < width && y < width)\n        out[y * width + x] = tile[threadIdx.x][threadIdx.y];\n}",
+    "params": "const float* __restrict__ in, float* __restrict__ out, int width",
+    "block_size": 256,
+    "n_elements": 4096,
+    "iters": 0,
+    "active": true,
+    "added": "2026-02-22T17:03:09",
+    "grid_x": 128,
+    "grid_y": 128
+  }
+]

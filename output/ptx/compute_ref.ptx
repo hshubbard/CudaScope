@@ -1,0 +1,73 @@
+.visible .entry _Z11compute_refPKfPfii(
+	.param .u64 _Z11compute_refPKfPfii_param_0,
+	.param .u64 _Z11compute_refPKfPfii_param_1,
+	.param .u32 _Z11compute_refPKfPfii_param_2,
+	.param .u32 _Z11compute_refPKfPfii_param_3
+)
+{
+	.reg .pred 	%p<7>;
+	.reg .f32 	%f<22>;
+	.reg .b32 	%r<16>;
+	.reg .b64 	%rd<10>;
+
+
+	ld.param.u64 	%rd2, [_Z11compute_refPKfPfii_param_0];
+	ld.param.u64 	%rd3, [_Z11compute_refPKfPfii_param_1];
+	ld.param.u32 	%r9, [_Z11compute_refPKfPfii_param_2];
+	ld.param.u32 	%r8, [_Z11compute_refPKfPfii_param_3];
+	mov.u32 	%r10, %ntid.x;
+	mov.u32 	%r11, %ctaid.x;
+	mov.u32 	%r12, %tid.x;
+	mad.lo.s32 	%r1, %r11, %r10, %r12;
+	setp.ge.s32 	%p1, %r1, %r9;
+	@%p1 bra 	$L__BB4_8;
+
+	cvta.to.global.u64 	%rd4, %rd2;
+	cvt.s64.s32 	%rd1, %r1;
+	mul.wide.s32 	%rd5, %r1, 4;
+	add.s64 	%rd6, %rd4, %rd5;
+	ld.global.nc.f32 	%f21, [%rd6];
+	setp.lt.s32 	%p2, %r8, 1;
+	@%p2 bra 	$L__BB4_7;
+
+	add.s32 	%r13, %r8, -1;
+	and.b32  	%r15, %r8, 3;
+	setp.lt.u32 	%p3, %r13, 3;
+	@%p3 bra 	$L__BB4_5;
+
+	sub.s32 	%r14, %r8, %r15;
+
+$L__BB4_4:
+	mov.f32 	%f10, 0f38D1B717;
+	mov.f32 	%f11, 0f3F800347;
+	fma.rn.f32 	%f12, %f21, %f11, %f10;
+	fma.rn.f32 	%f13, %f12, %f11, %f10;
+	fma.rn.f32 	%f14, %f13, %f11, %f10;
+	fma.rn.f32 	%f21, %f14, %f11, %f10;
+	add.s32 	%r14, %r14, -4;
+	setp.ne.s32 	%p4, %r14, 0;
+	@%p4 bra 	$L__BB4_4;
+
+$L__BB4_5:
+	setp.eq.s32 	%p5, %r15, 0;
+	@%p5 bra 	$L__BB4_7;
+
+$L__BB4_6:
+	.pragma "nounroll";
+	mov.f32 	%f15, 0f38D1B717;
+	mov.f32 	%f16, 0f3F800347;
+	fma.rn.f32 	%f21, %f21, %f16, %f15;
+	add.s32 	%r15, %r15, -1;
+	setp.ne.s32 	%p6, %r15, 0;
+	@%p6 bra 	$L__BB4_6;
+
+$L__BB4_7:
+	cvta.to.global.u64 	%rd7, %rd3;
+	shl.b64 	%rd8, %rd1, 2;
+	add.s64 	%rd9, %rd7, %rd8;
+	st.global.f32 	[%rd9], %f21;
+
+$L__BB4_8:
+	ret;
+
+}
