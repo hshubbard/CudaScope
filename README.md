@@ -2,7 +2,7 @@
 
 A GPU performance analysis tool that runs real CUDA kernels, collects real
 execution timing, performs static PTX analysis, and produces bottleneck
-reports — with every metric traceable to its source.
+reports, with every metric traceable to its source.
 
 ---
 
