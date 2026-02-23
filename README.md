@@ -27,47 +27,61 @@ reports — with every metric traceable to its source.
 ## Quick Start
 
 ```bash
-chmod +x analyze.sh
-./analyze.sh          # build → benchmark → PTX → analyze
-python gui.py         # launch the GUI
+# Install Python dependencies
+pip install pandas numpy matplotlib seaborn
 ```
+
+**Linux / macOS**
+```bash
+bash scripts/analyze.sh   # build → benchmark → PTX → analyze
+python src/gui.py         # launch the GUI
+```
+
+**Windows**
+```powershell
+bash scripts/analyze.sh   # requires Git Bash or WSL
+python src/gui.py
+```
+
+> The pipeline auto-detects Windows and builds `benchmark_user.exe`. The `.exe`
+> is gitignored — it is always rebuilt locally and never committed.
 
 Outputs land in `./output/`.
 
 ---
 
-## Project Files
+## Project Structure
 
-### Core pipeline
-
-| File | Role |
-|------|------|
-| `kernels.cu` / `kernels.cuh` | Built-in CUDA kernels |
-| `benchmark.cu` | Runtime measurement via CUDA events |
-| `user_kernels.cu` / `user_kernels.cuh` | Generated user kernel code |
-| `user_benchmark.cu` | Generated user kernel benchmark harness |
-| `ptx_parser.py` | Static PTX instruction analysis |
-| `analyze.py` | Metric derivation, bottleneck inference, visualisation |
-| `analyze.sh` | One-shot CLI (build → bench → PTX → analyze) |
-
-### Analysis passes (v1.1)
-
-| File | Role |
-|------|------|
-| `portability_pass.py` | Fragility analysis — arch assumptions, alignment casts, hard-coded warp sizes, missing barriers |
-| `determinism_pass.py` | Non-determinism detection — FP atomics, shuffle accumulation, shared memory races |
-| `resource_pressure_pass.py` | Occupancy analysis — smem size, block size, register pressure, atomic density |
-| `summary_report.py` | Aggregates all three passes into weighted combined risk scores |
-
-### User kernel management (v1.1)
-
-| File | Role |
-|------|------|
-| `kernel_manager.py` | Registry for user kernels, codegen pipeline |
-| `kernel_add.py` | CLI for adding a single user kernel |
-| `add_test_kernels.py` | Adds 6 test kernels covering all risk bands |
-| `user_kernels.json` | Persistent registry of user-defined kernels |
-| `gui.py` | tkinter GUI — Dashboard + Settings tabs |
+```
+.
+├── src/                        # Python analysis scripts
+│   ├── gui.py                  # tkinter GUI — Dashboard + Settings tabs
+│   ├── kernel_manager.py       # User kernel registry and pipeline runner
+│   ├── kernel_add.py           # CLI for adding a single user kernel
+│   ├── analyze.py              # Metric derivation, bottleneck inference, visualisation
+│   ├── ptx_parser.py           # Static PTX instruction analysis
+│   ├── portability_pass.py     # Fragility analysis pass
+│   ├── determinism_pass.py     # Non-determinism detection pass
+│   ├── resource_pressure_pass.py  # Occupancy / resource pressure pass
+│   └── summary_report.py       # Aggregates all three passes into risk scores
+│
+├── kernels/                    # CUDA source files
+│   ├── kernels.cu / .cuh       # Built-in benchmark kernels
+│   ├── benchmark.cu            # Built-in benchmark harness
+│   ├── user_kernels.cu / .cuh  # Generated user kernel code
+│   ├── user_benchmark.cu       # Generated user benchmark harness
+│   └── user_kernels.json       # Persistent user kernel registry
+│
+├── scripts/                    # Utility scripts
+│   ├── analyze.sh              # One-shot CLI (build → bench → PTX → analyze)
+│   └── add_test_kernels.py     # Adds 6 test kernels covering all risk bands
+│
+└── output/                     # Generated (gitignored)
+    ├── data/                   # runtimes.csv, ptx_stats.csv
+    ├── ptx/                    # Per-kernel .ptx files
+    ├── plots/                  # heatmap.png, summary_table.png, summary_scores.png
+    └── report/                 # report.md + per-pass reports + JSON
+```
 
 ---
 
@@ -297,3 +311,5 @@ values, not tuned to a specific NVIDIA SM generation.
 ```bash
 pip install pandas numpy matplotlib seaborn
 ```
+
+> `tkinter` ships with most Python distributions. If missing: `sudo apt install python3-tk` (Linux).

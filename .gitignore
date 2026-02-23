@@ -1,0 +1,32 @@
+# Compiled binaries
+*.exe
+*.obj
+*.o
+*.lib
+*.dll
+benchmark
+benchmark_user
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Generated outputs (run locally, not committed)
+output/
+
+# IDE
+.vscode/
+
+# Stray files
+eval
+analyzer_config.json
+
+# Claude Code project settings
+.claude/
+
+# CUDA build intermediates
+*.ptx_tmp
+*.fatbin
+*.cubin
