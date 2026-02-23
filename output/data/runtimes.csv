@@ -1,8 +1,0 @@
-kernel,n_elements,mean_us,std_us,approx_bandwidth_GBs,bottleneck
-tiled_transpose,4096,606.0307,93.0955,0.08110480211646043,Compute Balanced
-atomic_histogram,16777216,54985.2129,338.9724,3.661467899854217,Warp Divergence
-warp_reduce_shuffle,16777216,255.8234,1.5995,786.9748897090727,Compute Balanced
-large_smem_stencil,16777216,468.1466,84.5551,430.05031329929557,Shared Memory Bound
-tiny_block_saxpy,16777216,1149.2333,105.9391,175.1833957474083,Bandwidth Limited
-float4_copy,4194304,456.7453,65.9687,110.1963129122511,Bandwidth Limited
-race_smem_reduce,16777216,577.0349,74.9723,348.89846697314147,Shared Memory Bound
