@@ -1,0 +1,142 @@
+{
+  "tiled_transpose": [
+    {
+      "kernel_name": "tiled_transpose",
+      "location": "ptx:L18",
+      "category": "warp_assumption",
+      "severity": "medium",
+      "description": "PTX shift by 5 (>> 5 or << 5) used for warp-ID or warp-stride arithmetic implies warpSize == 32. Use `warpSize` runtime value or PTX `%warpsize` special register instead.",
+      "score": 5
+    },
+    {
+      "kernel_name": "tiled_transpose",
+      "location": "ptx:L22",
+      "category": "warp_assumption",
+      "severity": "medium",
+      "description": "PTX shift by 5 (>> 5 or << 5) used for warp-ID or warp-stride arithmetic implies warpSize == 32. Use `warpSize` runtime value or PTX `%warpsize` special register instead.",
+      "score": 5
+    }
+  ],
+  "atomic_histogram": [
+    {
+      "kernel_name": "atomic_histogram",
+      "location": "ptx:L36",
+      "category": "warp_assumption",
+      "severity": "high",
+      "description": "PTX `and.b32 <reg>, 31` computes lane-ID by masking with 31, assuming warpSize == 32. AMD GPUs use warpSize == 64; this mask will silently produce wrong lane IDs there.",
+      "score": 10
+    }
+  ],
+  "warp_reduce_shuffle": [
+    {
+      "kernel_name": "warp_reduce_shuffle",
+      "location": "ptx:L58",
+      "category": "warp_assumption",
+      "severity": "medium",
+      "description": "PTX shift by 5 (>> 5 or << 5) used for warp-ID or warp-stride arithmetic implies warpSize == 32. Use `warpSize` runtime value or PTX `%warpsize` special register instead.",
+      "score": 5
+    },
+    {
+      "kernel_name": "warp_reduce_shuffle",
+      "location": "ptx:L59",
+      "category": "warp_assumption",
+      "severity": "high",
+      "description": "PTX `and.b32 <reg>, 31` computes lane-ID by masking with 31, assuming warpSize == 32. AMD GPUs use warpSize == 64; this mask will silently produce wrong lane IDs there.",
+      "score": 10
+    },
+    {
+      "kernel_name": "warp_reduce_shuffle",
+      "location": "ptx:L73",
+      "category": "warp_assumption",
+      "severity": "medium",
+      "description": "PTX shift by 5 (>> 5 or << 5) used for warp-ID or warp-stride arithmetic implies warpSize == 32. Use `warpSize` runtime value or PTX `%warpsize` special register instead.",
+      "score": 5
+    },
+    {
+      "kernel_name": "warp_reduce_shuffle",
+      "location": "ptx:L36",
+      "category": "arch_specific_instruction",
+      "severity": "medium",
+      "description": "shfl.sync requires SM 7.0+; will not compile for older targets.  [Range conflict: requires SM 7.0+, but target min is SM 3.0]",
+      "score": 5
+    },
+    {
+      "kernel_name": "warp_reduce_shuffle",
+      "location": "ptx:L41",
+      "category": "arch_specific_instruction",
+      "severity": "medium",
+      "description": "shfl.sync requires SM 7.0+; will not compile for older targets.  [Range conflict: requires SM 7.0+, but target min is SM 3.0]",
+      "score": 5
+    },
+    {
+      "kernel_name": "warp_reduce_shuffle",
+      "location": "ptx:L46",
+      "category": "arch_specific_instruction",
+      "severity": "medium",
+      "description": "shfl.sync requires SM 7.0+; will not compile for older targets.  [Range conflict: requires SM 7.0+, but target min is SM 3.0]",
+      "score": 5
+    },
+    {
+      "kernel_name": "warp_reduce_shuffle",
+      "location": "ptx:L50",
+      "category": "arch_specific_instruction",
+      "severity": "medium",
+      "description": "shfl.sync requires SM 7.0+; will not compile for older targets.  [Range conflict: requires SM 7.0+, but target min is SM 3.0]",
+      "score": 5
+    },
+    {
+      "kernel_name": "warp_reduce_shuffle",
+      "location": "ptx:L55",
+      "category": "arch_specific_instruction",
+      "severity": "medium",
+      "description": "shfl.sync requires SM 7.0+; will not compile for older targets.  [Range conflict: requires SM 7.0+, but target min is SM 3.0]",
+      "score": 5
+    },
+    {
+      "kernel_name": "warp_reduce_shuffle",
+      "location": "ptx:L89",
+      "category": "arch_specific_instruction",
+      "severity": "medium",
+      "description": "shfl.sync requires SM 7.0+; will not compile for older targets.  [Range conflict: requires SM 7.0+, but target min is SM 3.0]",
+      "score": 5
+    },
+    {
+      "kernel_name": "warp_reduce_shuffle",
+      "location": "ptx:L93",
+      "category": "arch_specific_instruction",
+      "severity": "medium",
+      "description": "shfl.sync requires SM 7.0+; will not compile for older targets.  [Range conflict: requires SM 7.0+, but target min is SM 3.0]",
+      "score": 5
+    },
+    {
+      "kernel_name": "warp_reduce_shuffle",
+      "location": "ptx:L98",
+      "category": "arch_specific_instruction",
+      "severity": "medium",
+      "description": "shfl.sync requires SM 7.0+; will not compile for older targets.  [Range conflict: requires SM 7.0+, but target min is SM 3.0]",
+      "score": 5
+    }
+  ],
+  "large_smem_stencil": [],
+  "tiny_block_saxpy": [
+    {
+      "kernel_name": "tiny_block_saxpy",
+      "location": "ptx:L31",
+      "category": "undefined_behavior",
+      "severity": "low",
+      "description": "Global memory load without a visible bounds-check guard in the preceding PTX. If thread count does not evenly divide the array size, out-of-bounds threads may load garbage or fault. Verify that an `if (idx < n)` guard is present.",
+      "score": 2
+    }
+  ],
+  "float4_copy": [
+    {
+      "kernel_name": "float4_copy",
+      "location": "ptx:L28",
+      "category": "memory_alignment",
+      "severity": "medium",
+      "description": "Vector store `st.v4` assumes 16-byte alignment. Misaligned stores can cause access-fault on SM 3.x and silent partial writes on some architectures.",
+      "score": 5
+    }
+  ],
+  "race_smem_reduce": []
+}

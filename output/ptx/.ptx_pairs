@@ -1,1 +1,7 @@
 C:\employ\output\ptx\tiled_transpose.ptx::tiled_transpose
+C:\employ\output\ptx\atomic_histogram.ptx::atomic_histogram
+C:\employ\output\ptx\warp_reduce_shuffle.ptx::warp_reduce_shuffle
+C:\employ\output\ptx\large_smem_stencil.ptx::large_smem_stencil
+C:\employ\output\ptx\tiny_block_saxpy.ptx::tiny_block_saxpy
+C:\employ\output\ptx\float4_copy.ptx::float4_copy
+C:\employ\output\ptx\race_smem_reduce.ptx::race_smem_reduce

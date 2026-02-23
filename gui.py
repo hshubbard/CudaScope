@@ -5,15 +5,17 @@ Tabbed GUI for the CUDA Kernel Analyzer.
 
 Tabs
 ----
-  1. Kernels  – register / remove user kernels
-  2. Run      – run the analysis pipeline with live log output
-  3. Settings – edit classifier thresholds (written to analyzer_config.json)
+  1. Dashboard  – interactive kernel scorecard (scores, hotspots, detail panel)
+  2. Kernels    – register / remove user kernels
+  3. Run        – run the analysis pipeline with live log output
+  4. Settings   – edit classifier thresholds (written to analyzer_config.json)
 
 Run with:
     python gui.py
 """
 
 import json
+import math
 import os
 import queue
 import subprocess
@@ -63,16 +65,27 @@ class App(tk.Tk):
         notebook = ttk.Notebook(self)
         notebook.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
 
-        self.tab_kernels  = KernelsTab(notebook)
-        self.tab_run      = RunTab(notebook)
-        self.tab_settings = SettingsTab(notebook)
+        self.tab_dashboard = DashboardTab(notebook)
+        self.tab_kernels   = KernelsTab(notebook)
+        self.tab_run       = RunTab(notebook)
+        self.tab_settings  = SettingsTab(notebook)
 
-        notebook.add(self.tab_kernels,  text="  Kernels  ")
-        notebook.add(self.tab_run,      text="  Run & Results  ")
-        notebook.add(self.tab_settings, text="  Settings  ")
+        notebook.add(self.tab_dashboard, text="  Dashboard  ")
+        notebook.add(self.tab_kernels,   text="  Kernels  ")
+        notebook.add(self.tab_run,       text="  Run & Results  ")
+        notebook.add(self.tab_settings,  text="  Settings  ")
 
         # Cross-tab refresh: when kernels change, update Run tab label
         self.tab_kernels.on_change = self.tab_run.refresh_kernel_count
+
+        # When the user switches to Dashboard, auto-refresh if data exists
+        notebook.bind("<<NotebookTabChanged>>",
+                      lambda e: self._on_tab_change(notebook))
+
+    def _on_tab_change(self, notebook):
+        tab = notebook.tab(notebook.select(), "text").strip()
+        if tab == "Dashboard":
+            self.tab_dashboard.refresh()
 
 
 # ---------------------------------------------------------------------------
@@ -505,7 +518,589 @@ class RunTab(ttk.Frame):
 
 
 # ---------------------------------------------------------------------------
-# Tab 3 — Settings
+# Tab 1 — Dashboard
+# ---------------------------------------------------------------------------
+
+# Colours ─────────────────────────────────────────────────────────────────────
+# Risk level colours: red=high, amber=medium, green=low (same as traffic lights)
+_RISK_BG = {"HIGH": "#ffe0e0", "MEDIUM": "#fff7e0", "LOW": "#e6f7e6"}
+_RISK_FG = {"HIGH": "#8b0000", "MEDIUM": "#5c3d00", "LOW": "#1a5c1a"}
+# Bar fill colours per score band
+_BAR_CLR = {"high": "#d94040", "medium": "#cc8800", "low": "#3a9e3a", "none": "#cccccc"}
+# Treeview row colours
+_TAG_BG  = {"high": "#ffe0e0", "medium": "#fff7e0", "low": "#e6f7e6"}
+_TAG_FG  = {"high": "#8b0000", "medium": "#5c3d00", "low": "#1a5c1a"}
+
+
+def _score_band(score: int) -> str:
+    """Map a normalised 0-100 score to a colour band name."""
+    if score >= 60:
+        return "high"
+    if score >= 25:
+        return "medium"
+    if score > 0:
+        return "low"
+    return "none"
+
+
+# Report / CSV paths (must match summary_report.py) ──────────────────────────
+_BASE        = km.BASE_DIR
+_FRAG_JSON   = _BASE / "output" / "report" / "portability.json"
+_DET_JSON    = _BASE / "output" / "report" / "determinism.json"
+_RES_JSON    = _BASE / "output" / "report" / "resource.json"
+_RUNTIME_CSV = _BASE / "output" / "data"   / "runtimes.csv"
+_PTX_CSV     = _BASE / "output" / "data"   / "ptx_stats.csv"
+
+_TABLE_COLS = ("Kernel", "Bottleneck", "Fragility", "Non-Det", "Resource", "Risk")
+_TOP_N      = 3
+_SEV_LABEL  = {"high": "HI", "medium": "MD", "low": "LO"}
+
+
+class DashboardTab(ttk.Frame):
+    """Interactive kernel scorecard with detail panel and score legend."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self._summaries: list = []
+        self._tooltip         = None
+
+        self._build_ui()
+
+    # ── UI construction ──────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        # Use grid on self so the pane can expand freely while the legend
+        # and toolbar stay fixed-height at top and bottom respectively.
+        self.rowconfigure(1, weight=1)   # row 1 = pane (expands)
+        self.columnconfigure(0, weight=1)
+
+        # ── Row 0: top toolbar ────────────────────────────────────────────────
+        toolbar = ttk.Frame(self)
+        toolbar.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 0))
+
+        ttk.Label(toolbar, text="Kernel Dashboard",
+                  font=("", 12, "bold")).pack(side=tk.LEFT)
+        self._status_lbl = ttk.Label(toolbar, text="No data loaded.",
+                                      foreground="#666")
+        self._status_lbl.pack(side=tk.LEFT, padx=(16, 0))
+        ttk.Button(toolbar, text="Refresh",
+                   command=self.refresh).pack(side=tk.RIGHT)
+
+        # ── Row 1: vertical pane (expands to fill remaining space) ────────────
+        pane = ttk.PanedWindow(self, orient=tk.VERTICAL)
+        pane.grid(row=1, column=0, sticky="nsew", padx=8, pady=4)
+
+        # ── Kernel table ──────────────────────────────────────────────────────
+        table_frame = ttk.LabelFrame(pane, text="Kernel Summary Table  "
+                                     "(click column header to sort)")
+        pane.add(table_frame, weight=2)
+
+        self._tree = ttk.Treeview(
+            table_frame, columns=_TABLE_COLS,
+            show="headings", selectmode="browse", height=8,
+        )
+        for risk, (bg, fg) in zip(
+            ("high", "medium", "low"),
+            (("#ffe0e0","#8b0000"), ("#fff7e0","#5c3d00"), ("#e6f7e6","#1a5c1a"))
+        ):
+            self._tree.tag_configure(risk, background=bg, foreground=fg)
+
+        col_widths = {
+            "Kernel": 165, "Bottleneck": 200,
+            "Fragility": 85, "Non-Det": 85, "Resource": 85, "Risk": 75,
+        }
+        for col in _TABLE_COLS:
+            self._tree.heading(col, text=col,
+                               command=lambda c=col: self._sort_by(c))
+            self._tree.column(col, width=col_widths[col],
+                              anchor="center",
+                              stretch=(col == "Bottleneck"))
+        self._tree.column("Kernel",     anchor="w")
+        self._tree.column("Bottleneck", anchor="w")
+
+        tree_vsb = ttk.Scrollbar(table_frame, orient="vertical",
+                                  command=self._tree.yview)
+        self._tree.configure(yscrollcommand=tree_vsb.set)
+        tree_vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._tree.pack(fill=tk.BOTH, expand=True)
+        self._tree.bind("<<TreeviewSelect>>", self._on_row_select)
+        self._tree.bind("<Motion>", self._on_motion)
+        self._tree.bind("<Leave>",  self._hide_tooltip)
+
+        # ── Detail panel (scrollable canvas + inner frame) ────────────────────
+        detail_outer = ttk.LabelFrame(pane, text="Kernel Detail")
+        pane.add(detail_outer, weight=3)
+
+        self._detail_canvas = tk.Canvas(detail_outer, bg="#fafafa",
+                                         highlightthickness=0)
+        detail_vsb = ttk.Scrollbar(detail_outer, orient="vertical",
+                                    command=self._detail_canvas.yview)
+        self._detail_canvas.configure(yscrollcommand=detail_vsb.set)
+        detail_vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._detail_canvas.pack(fill=tk.BOTH, expand=True)
+
+        # inner frame lives inside the canvas window
+        self._detail_inner = tk.Frame(self._detail_canvas, bg="#fafafa")
+        self._detail_window = self._detail_canvas.create_window(
+            (0, 0), window=self._detail_inner, anchor="nw"
+        )
+        self._detail_inner.bind("<Configure>", self._on_inner_configure)
+        self._detail_canvas.bind("<Configure>", self._on_canvas_resize)
+
+        # Mouse-wheel scroll works anywhere inside the detail area
+        self._detail_canvas.bind("<Enter>",     self._bind_mousewheel)
+        self._detail_canvas.bind("<Leave>",     self._unbind_mousewheel)
+
+        tk.Label(self._detail_inner,
+                 text="Select a kernel above to see details.",
+                 bg="#fafafa", fg="#888").pack(anchor="w", padx=12, pady=8)
+
+        # ── Row 2: score legend (fixed height, always visible at bottom) ──────
+        self._build_legend()
+
+    # ── Score legend ──────────────────────────────────────────────────────────
+
+    def _build_legend(self):
+        leg = ttk.LabelFrame(self, text="Score Legend", padding=(8, 5))
+        leg.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 6))
+        leg.columnconfigure(1, weight=1)
+
+        # Three score rows
+        score_rows = [
+            ("Fragility (0–100)",
+             "How likely the kernel breaks when ported to a different GPU generation. "
+             "Flags warp-size assumptions, arch-specific instructions, alignment issues."),
+            ("Non-Determinism (0–100)",
+             "How likely the kernel produces inconsistent results. "
+             "Flags data races, unsynced shared-mem reads, FP-reduction ordering."),
+            ("Resource Pressure (0–100)",
+             "How likely the kernel reduces occupancy or monopolizes the SM. "
+             "Flags register spill, shared-mem overuse, non-power-of-2 block sizes."),
+        ]
+        for i, (name, desc) in enumerate(score_rows):
+            tk.Label(leg, text=name, font=("", 9, "bold"),
+                     anchor="w").grid(row=i, column=0, sticky="nw",
+                                      padx=(0, 12), pady=1)
+            tk.Label(leg, text=desc, font=("", 9), fg="#444",
+                     anchor="w", justify="left").grid(
+                row=i, column=1, sticky="ew", pady=1)
+
+        # Risk / threshold row
+        thresh_frame = tk.Frame(leg)
+        thresh_frame.grid(row=len(score_rows), column=0, columnspan=2,
+                          sticky="w", pady=(6, 0))
+        tk.Label(thresh_frame, text="Risk Level:",
+                 font=("", 9, "bold")).pack(side=tk.LEFT, padx=(0, 8))
+        for bg, fg, label in [
+            ("#ffe0e0", "#8b0000", "  HIGH  (combined ≥ 60)  "),
+            ("#fff7e0", "#5c3d00", "  MEDIUM  (25 – 59)  "),
+            ("#e6f7e6", "#1a5c1a", "  LOW  (1 – 24)  "),
+            ("#f0f0f0", "#555555", "  None  (0)  "),
+        ]:
+            tk.Label(thresh_frame, text=label, bg=bg, fg=fg,
+                     font=("", 8, "bold"), relief="solid", bd=1,
+                     padx=2).pack(side=tk.LEFT, padx=(0, 4))
+
+        calc_row = len(score_rows) + 1
+        tk.Label(leg,
+                 text="Combined = 40% Fragility + 35% Non-Det + 25% Resource.  "
+                      "Scores normalised: 100 = worst kernel this run, 0 = no issues.",
+                 font=("", 8), fg="#666", anchor="w").grid(
+            row=calc_row, column=0, columnspan=2, sticky="w", pady=(2, 0))
+
+    # ── Data loading ──────────────────────────────────────────────────────────
+
+    def _load_data(self) -> list:
+        import csv
+
+        def _jload(path):
+            if path.exists():
+                with open(path, encoding="utf-8") as f:
+                    return json.load(f)
+            return {}
+
+        frag = _jload(_FRAG_JSON)
+        det  = _jload(_DET_JSON)
+        res  = _jload(_RES_JSON)
+
+        runtime: dict = {}
+        if _RUNTIME_CSV.exists():
+            with open(_RUNTIME_CSV, newline="", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    n = row.get("kernel", "").strip()
+                    if n:
+                        runtime[n] = row
+
+        def _raw(flags):
+            return sum(f.get("score", 0) for f in flags)
+
+        def _norm(pass_data):
+            raws = {k: _raw(v) for k, v in pass_data.items()}
+            mx   = max(raws.values(), default=1) or 1
+            return {k: min(100, round(100 * r / mx)) for k, r in raws.items()}
+
+        frag_n = _norm(frag)
+        det_n  = _norm(det)
+        res_n  = _norm(res)
+
+        all_kernels = (set(frag) | set(det) | set(res) | set(runtime)) - {"kernels"}
+
+        def _top(flags, n=_TOP_N):
+            seen, out = set(), []
+            for f in sorted(flags, key=lambda x: -x.get("score", 0)):
+                key = f.get("description", "")[:40]
+                if key not in seen:
+                    seen.add(key)
+                    out.append(f)
+                if len(out) >= n:
+                    break
+            return out
+
+        def _sf(v):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return float("nan")
+
+        summaries = []
+        for name in sorted(all_kernels):
+            rt  = runtime.get(name, {})
+            f_s = frag_n.get(name, 0)
+            d_s = det_n.get(name,  0)
+            r_s = res_n.get(name,  0)
+            combined = round(0.40 * f_s + 0.35 * d_s + 0.25 * r_s)
+            summaries.append({
+                "name":        name,
+                "bottleneck":  rt.get("bottleneck", "—"),
+                "mean_us":     _sf(rt.get("mean_us")),
+                "bw_GBs":      _sf(rt.get("approx_bandwidth_GBs")),
+                "fragility":   f_s,
+                "determinism": d_s,
+                "resource":    r_s,
+                "combined":    combined,
+                "risk":        "HIGH"   if combined >= 60 else
+                               "MEDIUM" if combined >= 25 else "LOW",
+                "top_frag":    _top(frag.get(name, [])),
+                "top_det":     _top(det.get(name,  [])),
+                "top_res":     _top(res.get(name,  [])),
+            })
+
+        summaries.sort(key=lambda s: -s["combined"])
+        return summaries
+
+    # ── Refresh ───────────────────────────────────────────────────────────────
+
+    def refresh(self):
+        try:
+            self._summaries = self._load_data()
+        except Exception as exc:
+            self._status_lbl.config(
+                text=f"Error loading data: {exc}", foreground="red")
+            return
+
+        if not self._summaries:
+            self._status_lbl.config(
+                text="No analysis output found — run the pipeline first.",
+                foreground="#888")
+            self._tree.delete(*self._tree.get_children())
+            self._clear_detail()
+            return
+
+        self._status_lbl.config(
+            text=f"Loaded {len(self._summaries)} kernel(s).",
+            foreground="#226622")
+        self._populate_table(self._summaries)
+        self._clear_detail()
+
+    # ── Table ─────────────────────────────────────────────────────────────────
+
+    def _populate_table(self, summaries):
+        self._tree.delete(*self._tree.get_children())
+        for s in summaries:
+            tag = s["risk"].lower()
+            self._tree.insert("", tk.END, iid=s["name"],
+                values=(
+                    s["name"], s["bottleneck"],
+                    f"{s['fragility']}/100",
+                    f"{s['determinism']}/100",
+                    f"{s['resource']}/100",
+                    s["risk"],
+                ),
+                tags=(tag,))
+
+    _sort_state: dict = {}
+
+    def _sort_by(self, col):
+        asc = not self._sort_state.get(col, False)
+        self._sort_state[col] = asc
+        col_map = {
+            "Kernel":     lambda s: s["name"],
+            "Bottleneck": lambda s: s["bottleneck"],
+            "Fragility":  lambda s: s["fragility"],
+            "Non-Det":    lambda s: s["determinism"],
+            "Resource":   lambda s: s["resource"],
+            "Risk":       lambda s: {"HIGH": 2, "MEDIUM": 1, "LOW": 0}[s["risk"]],
+        }
+        self._summaries.sort(key=col_map.get(col, lambda s: s["name"]),
+                             reverse=not asc)
+        self._populate_table(self._summaries)
+
+    # ── Row selection → detail panel ─────────────────────────────────────────
+
+    def _on_row_select(self, _event):
+        sel = self._tree.selection()
+        if not sel:
+            return
+        s = next((x for x in self._summaries if x["name"] == sel[0]), None)
+        if s:
+            self._show_detail(s)
+
+    # ── Detail panel ──────────────────────────────────────────────────────────
+
+    def _clear_detail(self):
+        for w in self._detail_inner.winfo_children():
+            w.destroy()
+        tk.Label(self._detail_inner,
+                 text="Select a kernel above to see details.",
+                 bg="#fafafa", fg="#888").pack(anchor="w", padx=12, pady=8)
+
+    def _show_detail(self, s: dict):
+        for w in self._detail_inner.winfo_children():
+            w.destroy()
+
+        risk_bg = _RISK_BG.get(s["risk"], "#f0f0f0")
+        risk_fg = _RISK_FG.get(s["risk"], "#000")
+
+        # ── Summary card ──────────────────────────────────────────────────────
+        card = tk.Frame(self._detail_inner, bg=risk_bg, relief="solid", bd=1)
+        card.pack(fill=tk.X, padx=0, pady=(0, 6))
+
+        # Name + risk badge
+        title_row = tk.Frame(card, bg=risk_bg)
+        title_row.pack(fill=tk.X, padx=10, pady=(8, 2))
+        tk.Label(title_row, text=s["name"],
+                 font=("Consolas", 11, "bold"),
+                 bg=risk_bg, fg=risk_fg).pack(side=tk.LEFT)
+        tk.Label(title_row,
+                 text=f"   [{s['risk']}]   combined score: {s['combined']}/100",
+                 font=("", 10, "bold"), bg=risk_bg, fg=risk_fg).pack(side=tk.LEFT)
+
+        # Metrics line
+        def _fmt(v, unit):
+            return f"{v:.1f} {unit}" if not math.isnan(v) else "n/a"
+
+        tk.Label(card,
+                 text=(f"Bottleneck: {s['bottleneck']}     "
+                       f"Runtime: {_fmt(s['mean_us'], 'us')}     "
+                       f"Bandwidth: {_fmt(s['bw_GBs'], 'GB/s')}"),
+                 font=("", 9), bg=risk_bg, fg=risk_fg,
+                 anchor="w").pack(fill=tk.X, padx=10, pady=(0, 4))
+
+        # Score bars — use a grid so columns stay aligned
+        bars_frame = tk.Frame(card, bg=risk_bg)
+        bars_frame.pack(fill=tk.X, padx=10, pady=(2, 8))
+        bars_frame.columnconfigure(2, weight=1)
+
+        BAR_W = 260
+        for row_idx, (lbl, score) in enumerate([
+            ("Fragility",        s["fragility"]),
+            ("Non-Determinism",  s["determinism"]),
+            ("Resource Pressure", s["resource"]),
+        ]):
+            band   = _score_band(score)
+            bar_fg = _BAR_CLR[band]
+            tk.Label(bars_frame, text=lbl, font=("", 9), bg=risk_bg,
+                     fg="#333", anchor="w", width=18).grid(
+                row=row_idx, column=0, sticky="w", padx=(0, 6), pady=2)
+            tk.Label(bars_frame, text=f"{score:>3}/100",
+                     font=("Consolas", 9, "bold"), bg=risk_bg,
+                     fg=bar_fg, width=7, anchor="e").grid(
+                row=row_idx, column=1, sticky="e", padx=(0, 8), pady=2)
+            bar_cvs = tk.Canvas(bars_frame, width=BAR_W, height=13,
+                                bg="#e0e0e0", highlightthickness=0)
+            bar_cvs.grid(row=row_idx, column=2, sticky="ew", pady=2)
+            if score > 0:
+                # Draw filled region
+                bar_cvs.create_rectangle(
+                    0, 0, int(BAR_W * score / 100), 13,
+                    fill=bar_fg, outline="")
+                # Threshold markers at 25 and 60
+                for thresh, clr in ((25, "#cc8800"), (60, "#d94040")):
+                    x = int(BAR_W * thresh / 100)
+                    bar_cvs.create_line(x, 0, x, 13, fill=clr,
+                                        width=1, dash=(3, 2))
+
+        # ── Next action ───────────────────────────────────────────────────────
+        action   = self._action(s["bottleneck"], s["risk"])
+        act_bg   = "#f5f5f5"
+        act_frame = tk.Frame(self._detail_inner, bg=act_bg)
+        act_frame.pack(fill=tk.X, padx=0, pady=(0, 6))
+        act_frame.columnconfigure(1, weight=1)
+        tk.Label(act_frame, text="Next action:", font=("", 9, "bold"),
+                 bg=act_bg, fg="#333", anchor="w").grid(
+            row=0, column=0, sticky="w", padx=(10, 6), pady=6)
+        tk.Label(act_frame, text=action, font=("", 9),
+                 bg=act_bg, fg="#114411", anchor="w",
+                 justify="left", wraplength=700).grid(
+            row=0, column=1, sticky="ew", padx=(0, 10), pady=6)
+
+        # ── Per-pass flag sections ─────────────────────────────────────────────
+        for pass_label, flags, hdr_clr in [
+            ("Fragility",        s["top_frag"],  "#c0603a"),
+            ("Non-Determinism",  s["top_det"],   "#3a6aaa"),
+            ("Resource Pressure", s["top_res"],  "#3a8a3a"),
+        ]:
+            self._flags_section(pass_label, flags, hdr_clr)
+
+    def _flags_section(self, label: str, flags: list, hdr_clr: str):
+        if not flags:
+            return
+
+        # Coloured header bar
+        hdr = tk.Frame(self._detail_inner, bg=hdr_clr)
+        hdr.pack(fill=tk.X, pady=(6, 0))
+        tk.Label(hdr, text=f"  {label}  —  top {len(flags)} flag(s)",
+                 font=("", 9, "bold"), bg=hdr_clr, fg="white",
+                 padx=6, pady=3).pack(anchor="w")
+
+        # Use a grid-based layout inside a container so columns stay aligned
+        container = tk.Frame(self._detail_inner, bg="#fafafa")
+        container.pack(fill=tk.X)
+        container.columnconfigure(2, weight=1)   # description column expands
+
+        for i, f in enumerate(flags):
+            row_bg = "#f8f8f8" if i % 2 == 0 else "#efefef"
+            sev    = _SEV_LABEL.get(f.get("severity", "").lower(), "??")
+            cat    = f.get("category", "unknown")
+            loc    = f.get("location", "")
+            desc   = f.get("description", "")
+            sev_fg = {"HI": "#bb2222", "MD": "#995500",
+                      "LO": "#228822"}.get(sev, "#555")
+
+            # Severity badge
+            tk.Label(container,
+                     text=f" [{sev}] ",
+                     font=("Consolas", 8, "bold"),
+                     bg=row_bg, fg=sev_fg, anchor="center").grid(
+                row=i, column=0, sticky="nsew", padx=(8, 2), pady=3)
+
+            # Category + location stacked
+            meta = tk.Frame(container, bg=row_bg)
+            meta.grid(row=i, column=1, sticky="nsw", padx=(2, 8), pady=3)
+            tk.Label(meta, text=cat,
+                     font=("Consolas", 8, "bold"),
+                     bg=row_bg, fg=sev_fg, anchor="w",
+                     justify="left", wraplength=200).pack(anchor="w")
+            if loc:
+                tk.Label(meta, text=loc,
+                         font=("Consolas", 8), bg=row_bg,
+                         fg="#777", anchor="w").pack(anchor="w")
+
+            # Full description — wraps naturally, no fixed width needed
+            tk.Label(container, text=desc,
+                     font=("", 9), bg=row_bg, fg="#222",
+                     anchor="w", justify="left", wraplength=550).grid(
+                row=i, column=2, sticky="ew", padx=(0, 10), pady=3)
+
+            # Row background spans all columns
+            for col in (0, 1, 2):
+                container.grid_columnconfigure(col, minsize=0)
+
+    # ── Canvas / scroll helpers ───────────────────────────────────────────────
+
+    def _on_inner_configure(self, _event):
+        self._detail_canvas.configure(
+            scrollregion=self._detail_canvas.bbox("all"))
+
+    def _on_canvas_resize(self, event):
+        self._detail_canvas.itemconfig(self._detail_window, width=event.width)
+
+    def _bind_mousewheel(self, _event):
+        self._detail_canvas.bind_all("<MouseWheel>",   self._on_mousewheel)
+        self._detail_canvas.bind_all("<Button-4>",     self._on_mousewheel)
+        self._detail_canvas.bind_all("<Button-5>",     self._on_mousewheel)
+
+    def _unbind_mousewheel(self, _event):
+        self._detail_canvas.unbind_all("<MouseWheel>")
+        self._detail_canvas.unbind_all("<Button-4>")
+        self._detail_canvas.unbind_all("<Button-5>")
+
+    def _on_mousewheel(self, event):
+        if event.num == 4:
+            self._detail_canvas.yview_scroll(-1, "units")
+        elif event.num == 5:
+            self._detail_canvas.yview_scroll(1, "units")
+        else:
+            self._detail_canvas.yview_scroll(
+                int(-1 * (event.delta / 120)), "units")
+
+    # ── Tooltip ───────────────────────────────────────────────────────────────
+
+    def _on_motion(self, event):
+        item = self._tree.identify_row(event.y)
+        if not item:
+            self._hide_tooltip()
+            return
+        s = next((x for x in self._summaries if x["name"] == item), None)
+        if not s:
+            self._hide_tooltip()
+            return
+        lines = [f"Kernel: {s['name']}  [{s['risk']}]  combined: {s['combined']}/100"]
+        for lbl, flags in [("Frag", s["top_frag"]),
+                            ("Det",  s["top_det"]),
+                            ("Res",  s["top_res"])]:
+            for f in flags[:2]:
+                sev = _SEV_LABEL.get(f.get("severity", "").lower(), "??")
+                cat = f.get("category", "")[:32]
+                lines.append(f"  [{lbl}/{sev}] {cat}")
+        if len(lines) == 1:
+            lines.append("  (no flags)")
+        self._show_tooltip("\n".join(lines), event)
+
+    def _show_tooltip(self, text: str, event):
+        self._hide_tooltip()
+        tip = tk.Toplevel(self)
+        tip.wm_overrideredirect(True)
+        tip.wm_geometry(f"+{event.x_root + 16}+{event.y_root + 10}")
+        tk.Label(tip, text=text, justify=tk.LEFT, font=("Consolas", 8),
+                 bg="#ffffcc", fg="#222", relief="solid", bd=1,
+                 padx=6, pady=4).pack()
+        self._tooltip = tip
+
+    def _hide_tooltip(self, _event=None):
+        if self._tooltip:
+            try:
+                self._tooltip.destroy()
+            except Exception:
+                pass
+            self._tooltip = None
+
+    # ── Action helper ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _action(bottleneck: str, risk: str) -> str:
+        prefix = {"HIGH": "URGENT: ", "MEDIUM": "Consider: ", "LOW": ""}.get(risk, "")
+        actions = {
+            "Warp Divergence":
+                "Eliminate per-thread branch with branchless arithmetic.",
+            "Memory Bound (Poor Coalescing)":
+                "Restructure access pattern for coalesced reads (SoA layout).",
+            "Memory Bound":
+                "Tile into shared memory to reduce global traffic.",
+            "Shared Memory Bound":
+                "Tune block size or replace smem reduction with warp shuffles.",
+            "Bandwidth Limited":
+                "Fuse kernels or use half-precision to cut bandwidth demand.",
+            "Compute Balanced":
+                "Profile register pressure / occupancy in Nsight Compute.",
+            "Compute Bound (Reference)":
+                "Reference kernel — compare against divergent variant.",
+        }
+        return prefix + actions.get(bottleneck, "Inspect flags below.")
+
+
+# ---------------------------------------------------------------------------
+# Tab 4 — Settings
 # ---------------------------------------------------------------------------
 
 class SettingsTab(ttk.Frame):

@@ -3,3 +3,9 @@
 #include "kernels.cuh"
 
 __global__ void tiled_transpose(const float* __restrict__ in, float* __restrict__ out, int width);
+__global__ void atomic_histogram(const float* __restrict__ a, float* __restrict__ bins, int n);
+__global__ void warp_reduce_shuffle(const float* __restrict__ a, float* __restrict__ out, int n);
+__global__ void large_smem_stencil(const float* __restrict__ in, float* __restrict__ out, int n);
+__global__ void tiny_block_saxpy(const float* __restrict__ a, const float* __restrict__ b, float* __restrict__ c, int n);
+__global__ void float4_copy(const float* __restrict__ a, float* __restrict__ c, int n);
+__global__ void race_smem_reduce(const float* __restrict__ a, float* __restrict__ out, int n);

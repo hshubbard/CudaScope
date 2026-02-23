@@ -715,6 +715,79 @@ def run_pipeline(
             log(f"[ERROR] Command not found: {e}")
             return 1
 
+        # ---- Static analysis passes (run after PTX is available) ----
+        # Guard: if built-ins are disabled and no user kernels are active,
+        # there is nothing to analyse — skip all three passes.
+        _active_user = [k for k in load_registry() if k.get("active", True)]
+        _has_kernels = include_builtins or bool(_active_user)
+
+        if not _has_kernels:
+            log("\n[INFO] Skipping static analysis passes — no kernels selected.")
+        else:
+            # Use the .ptx_pairs file written by _run_ptx_split_and_parse as
+            # the authoritative list of PTX files for THIS run.  This avoids
+            # analysing stale PTX from a previous run that had a different
+            # include_builtins setting.
+            _ptx_dir    = BASE_DIR / "output" / "ptx"
+            _pairs_file = _ptx_dir / ".ptx_pairs"
+            if _pairs_file.exists():
+                # Pass individual "path::name" pairs so each script analyses
+                # exactly the kernels compiled in this run.
+                _ptx_file_args = _pairs_file.read_text(encoding="utf-8").splitlines()
+                _ptx_file_args = [p for p in _ptx_file_args if p.strip()]
+            else:
+                # Fallback: scan the directory (handles skip_ptx=True re-runs)
+                _ptx_file_args = ["--ptx-dir", str(_ptx_dir)]
+
+            _report_dir = BASE_DIR / "output" / "report"
+            _pass_specs = [
+                # (script, label, json_output_path)
+                ("portability_pass.py",
+                 "Portability Pass",
+                 str(_report_dir / "portability.json")),
+                ("determinism_pass.py",
+                 "Determinism Pass",
+                 str(_report_dir / "determinism.json")),
+                ("resource_pressure_pass.py",
+                 "Resource Pressure Pass",
+                 str(_report_dir / "resource.json")),
+            ]
+
+            for pass_script, pass_label, json_out in _pass_specs:
+                log(f"\n{'='*40}\n  {pass_label}\n{'='*40}")
+                try:
+                    proc = subprocess.Popen(
+                        [py, pass_script, "--json", json_out] + _ptx_file_args,
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, cwd=str(BASE_DIR),
+                    )
+                    for line in proc.stdout:
+                        log(line.rstrip())
+                    proc.wait()
+                    if proc.returncode != 0:
+                        log(f"[WARN] {pass_label} exited with code {proc.returncode}")
+                except FileNotFoundError as e:
+                    log(f"[WARN] {pass_script} not found: {e}")
+
+            # ---- Unified summary report ----
+            log(f"\n{'='*40}\n  Summary Report\n{'='*40}")
+            try:
+                proc = subprocess.Popen(
+                    [py, "summary_report.py",
+                     "--frag-json", str(_report_dir / "portability.json"),
+                     "--det-json",  str(_report_dir / "determinism.json"),
+                     "--res-json",  str(_report_dir / "resource.json")],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, cwd=str(BASE_DIR),
+                )
+                for line in proc.stdout:
+                    log(line.rstrip())
+                proc.wait()
+                if proc.returncode != 0:
+                    log(f"[WARN] Summary report exited with code {proc.returncode}")
+            except FileNotFoundError as e:
+                log(f"[WARN] summary_report.py not found: {e}")
+
     log("\nDone. Outputs in ./output/")
     return 0
 

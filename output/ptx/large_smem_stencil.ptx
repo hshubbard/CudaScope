@@ -1,0 +1,74 @@
+.visible .entry _Z18large_smem_stencilPKfPfi(
+	.param .u64 _Z18large_smem_stencilPKfPfi_param_0,
+	.param .u64 _Z18large_smem_stencilPKfPfi_param_1,
+	.param .u32 _Z18large_smem_stencilPKfPfi_param_2
+)
+{
+	.reg .pred 	%p<5>;
+	.reg .f32 	%f<21>;
+	.reg .b32 	%r<12>;
+	.reg .b64 	%rd<9>;
+	// demoted variable
+	.shared .align 4 .b8 _ZZ18large_smem_stencilPKfPfiE4smem[2048];
+	// demoted variable
+	.shared .align 4 .b8 _ZZ18large_smem_stencilPKfPfiE4halo[1024];
+
+	ld.param.u64 	%rd1, [_Z18large_smem_stencilPKfPfi_param_0];
+	ld.param.u64 	%rd2, [_Z18large_smem_stencilPKfPfi_param_1];
+	ld.param.u32 	%r6, [_Z18large_smem_stencilPKfPfi_param_2];
+	mov.u32 	%r1, %ntid.x;
+	mov.u32 	%r7, %ctaid.x;
+	mov.u32 	%r2, %tid.x;
+	mad.lo.s32 	%r3, %r7, %r1, %r2;
+	setp.ge.s32 	%p1, %r3, %r6;
+	mov.f32 	%f19, 0f00000000;
+	mov.f32 	%f18, %f19;
+	@%p1 bra 	$L__BB3_2;
+
+	cvta.to.global.u64 	%rd3, %rd1;
+	mul.wide.s32 	%rd4, %r3, 4;
+	add.s64 	%rd5, %rd3, %rd4;
+	ld.global.nc.f32 	%f18, [%rd5];
+
+$L__BB3_2:
+	shl.b32 	%r8, %r2, 2;
+	mov.u32 	%r9, _ZZ18large_smem_stencilPKfPfiE4smem;
+	add.s32 	%r4, %r9, %r8;
+	st.shared.f32 	[%r4], %f18;
+	mov.u32 	%r10, _ZZ18large_smem_stencilPKfPfiE4halo;
+	add.s32 	%r5, %r10, %r8;
+	mul.f32 	%f10, %f18, 0f3F000000;
+	st.shared.f32 	[%r5], %f10;
+	bar.sync 	0;
+	setp.lt.s32 	%p2, %r2, 1;
+	@%p2 bra 	$L__BB3_4;
+
+	ld.shared.f32 	%f11, [%r4+-4];
+	mul.f32 	%f19, %f11, 0f3E800000;
+
+$L__BB3_4:
+	add.s32 	%r11, %r1, -1;
+	setp.ge.u32 	%p3, %r2, %r11;
+	mov.f32 	%f20, 0f00000000;
+	@%p3 bra 	$L__BB3_6;
+
+	ld.shared.f32 	%f13, [%r4+4];
+	mul.f32 	%f20, %f13, 0f3E800000;
+
+$L__BB3_6:
+	ld.shared.f32 	%f14, [%r4];
+	fma.rn.f32 	%f15, %f14, 0f3F000000, %f19;
+	add.f32 	%f16, %f20, %f15;
+	ld.shared.f32 	%f17, [%r5];
+	add.f32 	%f7, %f17, %f16;
+	@%p1 bra 	$L__BB3_8;
+
+	cvta.to.global.u64 	%rd6, %rd2;
+	mul.wide.s32 	%rd7, %r3, 4;
+	add.s64 	%rd8, %rd6, %rd7;
+	st.global.f32 	[%rd8], %f7;
+
+$L__BB3_8:
+	ret;
+
+}

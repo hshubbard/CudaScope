@@ -33,6 +33,12 @@ static const int BENCH_RUNS   = 100;
 
 enum KernelID {
     K_TILED_TRANSPOSE = 0,
+    K_ATOMIC_HISTOGRAM = 1,
+    K_WARP_REDUCE_SHUFFLE = 2,
+    K_LARGE_SMEM_STENCIL = 3,
+    K_TINY_BLOCK_SAXPY = 4,
+    K_FLOAT4_COPY = 5,
+    K_RACE_SMEM_REDUCE = 6,
 };
 
 static void launch_once(KernelID kid,
@@ -43,6 +49,24 @@ static void launch_once(KernelID kid,
     switch (kid) {
     case K_TILED_TRANSPOSE:
         { dim3 _g(128, 128); dim3 _b(32, 32); tiled_transpose<<<_g, _b>>>(d_a, d_c, n); }
+        break;
+    case K_ATOMIC_HISTOGRAM:
+        atomic_histogram<<<((n + 256 - 1) / 256), block>>>(d_a, d_c, n);
+        break;
+    case K_WARP_REDUCE_SHUFFLE:
+        warp_reduce_shuffle<<<((n + 256 - 1) / 256), block>>>(d_a, d_c, n);
+        break;
+    case K_LARGE_SMEM_STENCIL:
+        large_smem_stencil<<<((n + 256 - 1) / 256), block>>>(d_a, d_c, n);
+        break;
+    case K_TINY_BLOCK_SAXPY:
+        tiny_block_saxpy<<<((n + 32 - 1) / 32), block>>>(d_a, d_b, d_c, n);
+        break;
+    case K_FLOAT4_COPY:
+        float4_copy<<<((n + 256 - 1) / 256), block>>>(d_a, d_c, n);
+        break;
+    case K_RACE_SMEM_REDUCE:
+        race_smem_reduce<<<((n + 256 - 1) / 256), block>>>(d_a, d_c, n);
         break;
     default: break;
     }
@@ -122,19 +146,61 @@ int main()
 
     // Per-kernel element counts
     int n0_elem = 4096;
+    int n1_elem = 16777216;
+    int n2_elem = 16777216;
+    int n3_elem = 16777216;
+    int n4_elem = 16777216;
+    int n5_elem = 4194304;
+    int n6_elem = 16777216;
 
     // ---- Benchmark all kernels ----
     printf("Benchmarking tiled_transpose ...\n");
     float* t0 = time_kernel(K_TILED_TRANSPOSE, d_a, d_b, d_c, n0_elem, STRIDE, 0,
                               0, grid2, BLOCK_SIZE, WARMUP_RUNS, BENCH_RUNS);
 
+    printf("Benchmarking atomic_histogram ...\n");
+    float* t1 = time_kernel(K_ATOMIC_HISTOGRAM, d_a, d_b, d_c, n1_elem, STRIDE, 0,
+                              0, grid2, BLOCK_SIZE, WARMUP_RUNS, BENCH_RUNS);
+
+    printf("Benchmarking warp_reduce_shuffle ...\n");
+    float* t2 = time_kernel(K_WARP_REDUCE_SHUFFLE, d_a, d_b, d_c, n2_elem, STRIDE, 0,
+                              0, grid2, BLOCK_SIZE, WARMUP_RUNS, BENCH_RUNS);
+
+    printf("Benchmarking large_smem_stencil ...\n");
+    float* t3 = time_kernel(K_LARGE_SMEM_STENCIL, d_a, d_b, d_c, n3_elem, STRIDE, 0,
+                              0, grid2, BLOCK_SIZE, WARMUP_RUNS, BENCH_RUNS);
+
+    printf("Benchmarking tiny_block_saxpy ...\n");
+    float* t4 = time_kernel(K_TINY_BLOCK_SAXPY, d_a, d_b, d_c, n4_elem, STRIDE, 0,
+                              0, grid2, BLOCK_SIZE, WARMUP_RUNS, BENCH_RUNS);
+
+    printf("Benchmarking float4_copy ...\n");
+    float* t5 = time_kernel(K_FLOAT4_COPY, d_a, d_b, d_c, n5_elem, STRIDE, 0,
+                              0, grid2, BLOCK_SIZE, WARMUP_RUNS, BENCH_RUNS);
+
+    printf("Benchmarking race_smem_reduce ...\n");
+    float* t6 = time_kernel(K_RACE_SMEM_REDUCE, d_a, d_b, d_c, n6_elem, STRIDE, 0,
+                              0, grid2, BLOCK_SIZE, WARMUP_RUNS, BENCH_RUNS);
+
     // ---- Stats ----
-    double m0, s0;
+    double m0, s0, m1, s1, m2, s2, m3, s3, m4, s4, m5, s5, m6, s6;
     compute_stats(t0, BENCH_RUNS, &m0, &s0);
-    m0*=1000; s0*=1000;
+    compute_stats(t1, BENCH_RUNS, &m1, &s1);
+    compute_stats(t2, BENCH_RUNS, &m2, &s2);
+    compute_stats(t3, BENCH_RUNS, &m3, &s3);
+    compute_stats(t4, BENCH_RUNS, &m4, &s4);
+    compute_stats(t5, BENCH_RUNS, &m5, &s5);
+    compute_stats(t6, BENCH_RUNS, &m6, &s6);
+    m0*=1000; s0*=1000; m1*=1000; s1*=1000; m2*=1000; s2*=1000; m3*=1000; s3*=1000; m4*=1000; s4*=1000; m5*=1000; s5*=1000; m6*=1000; s6*=1000;
 
     printf("\n--- Results ---\n");
     printf("%-26s: mean=%8.2f us  std=%6.2f us\n", "tiled_transpose", m0, s0);
+    printf("%-26s: mean=%8.2f us  std=%6.2f us\n", "atomic_histogram", m1, s1);
+    printf("%-26s: mean=%8.2f us  std=%6.2f us\n", "warp_reduce_shuffle", m2, s2);
+    printf("%-26s: mean=%8.2f us  std=%6.2f us\n", "large_smem_stencil", m3, s3);
+    printf("%-26s: mean=%8.2f us  std=%6.2f us\n", "tiny_block_saxpy", m4, s4);
+    printf("%-26s: mean=%8.2f us  std=%6.2f us\n", "float4_copy", m5, s5);
+    printf("%-26s: mean=%8.2f us  std=%6.2f us\n", "race_smem_reduce", m6, s6);
 
     // ---- CSV ----
     ensure_output_dirs();
@@ -143,10 +209,22 @@ int main()
     fprintf(f, "kernel,n_elements,bytes_per_array,warmup_runs,bench_runs,mean_us,std_us\n");
     fprintf(f, "tiled_transpose,%d,%zu,%d,%d,%.4f,%.4f\n",
             n0_elem, bytes, WARMUP_RUNS, BENCH_RUNS, m0, s0);
+    fprintf(f, "atomic_histogram,%d,%zu,%d,%d,%.4f,%.4f\n",
+            n1_elem, bytes, WARMUP_RUNS, BENCH_RUNS, m1, s1);
+    fprintf(f, "warp_reduce_shuffle,%d,%zu,%d,%d,%.4f,%.4f\n",
+            n2_elem, bytes, WARMUP_RUNS, BENCH_RUNS, m2, s2);
+    fprintf(f, "large_smem_stencil,%d,%zu,%d,%d,%.4f,%.4f\n",
+            n3_elem, bytes, WARMUP_RUNS, BENCH_RUNS, m3, s3);
+    fprintf(f, "tiny_block_saxpy,%d,%zu,%d,%d,%.4f,%.4f\n",
+            n4_elem, bytes, WARMUP_RUNS, BENCH_RUNS, m4, s4);
+    fprintf(f, "float4_copy,%d,%zu,%d,%d,%.4f,%.4f\n",
+            n5_elem, bytes, WARMUP_RUNS, BENCH_RUNS, m5, s5);
+    fprintf(f, "race_smem_reduce,%d,%zu,%d,%d,%.4f,%.4f\n",
+            n6_elem, bytes, WARMUP_RUNS, BENCH_RUNS, m6, s6);
     fclose(f);
     printf("\nSaved: output/data/runtimes.csv\n");
 
-    delete[] t0;
+    delete[] t0; delete[] t1; delete[] t2; delete[] t3; delete[] t4; delete[] t5; delete[] t6;
     CUDA_CHECK(cudaFree(d_a));
     CUDA_CHECK(cudaFree(d_b));
     CUDA_CHECK(cudaFree(d_c));

@@ -10,5 +10,65 @@
     "added": "2026-02-22T17:03:09",
     "grid_x": 128,
     "grid_y": 128
+  },
+  {
+    "name": "atomic_histogram",
+    "code": "__global__ void atomic_histogram(const float* __restrict__ a,\n                                  float* __restrict__ bins,\n                                  int n)\n{\n    int idx = blockIdx.x * blockDim.x + threadIdx.x;\n    if (idx >= n) return;\n\n    // Warp-lane extraction: hard-coded mask assuming warpSize == 32\n    int lane = threadIdx.x & 31;\n    float val = a[idx];\n\n    // Thread-divergent bin selection (each thread takes a different bin)\n    int bin = (int)(val * 8.0f) & 7;\n\n    // Non-deterministic FP accumulation via global atomic\n    atomicAdd(&bins[bin], val);\n\n    // Multiple divergent branches across warp lanes — serialises the warp\n    if (lane < 8) {\n        atomicAdd(&bins[bin ^ 1], val * 0.5f);\n    } else if (lane < 16) {\n        atomicAdd(&bins[bin ^ 2], val * 0.25f);\n    } else if (lane < 24) {\n        atomicAdd(&bins[bin ^ 3], val * 0.125f);\n    } else {\n        atomicAdd(&bins[bin ^ 4], val * 0.0625f);\n    }\n}",
+    "params": "const float* __restrict__ a, float* __restrict__ bins, int n",
+    "block_size": 256,
+    "n_elements": 16777216,
+    "iters": 0,
+    "active": true,
+    "added": "2026-02-23T14:05:09"
+  },
+  {
+    "name": "warp_reduce_shuffle",
+    "code": "__global__ void warp_reduce_shuffle(const float* __restrict__ a,\n                                     float* __restrict__ out,\n                                     int n)\n{\n    int idx = blockIdx.x * blockDim.x + threadIdx.x;\n    float val = (idx < n) ? a[idx] : 0.0f;\n\n    // Warp-level reduction via shuffle (requires SM 7.0+)\n    val += __shfl_down_sync(0xffffffff, val, 16);\n    val += __shfl_down_sync(0xffffffff, val,  8);\n    val += __shfl_down_sync(0xffffffff, val,  4);\n    val += __shfl_down_sync(0xffffffff, val,  2);\n    val += __shfl_down_sync(0xffffffff, val,  1);\n\n    // Block-level via shared memory\n    __shared__ float smem[8];\n    int lane = threadIdx.x & 31;\n    int wid  = threadIdx.x / 32;\n    if (lane == 0) smem[wid] = val;\n    __syncthreads();\n\n    if (wid == 0) {\n        val = (lane < (blockDim.x / 32)) ? smem[lane] : 0.0f;\n        val += __shfl_down_sync(0xffffffff, val, 4);\n        val += __shfl_down_sync(0xffffffff, val, 2);\n        val += __shfl_down_sync(0xffffffff, val, 1);\n        if (lane == 0) out[blockIdx.x] = val;\n    }\n}",
+    "params": "const float* __restrict__ a, float* __restrict__ out, int n",
+    "block_size": 256,
+    "n_elements": 16777216,
+    "iters": 0,
+    "active": true,
+    "added": "2026-02-23T14:05:09"
+  },
+  {
+    "name": "large_smem_stencil",
+    "code": "__global__ void large_smem_stencil(const float* __restrict__ in,\n                                    float* __restrict__ out,\n                                    int n)\n{\n    // Large shared allocation: 256 * 4 = 1024 floats = 4 KB per block\n    // Plus halo: 512 floats = 2 KB \u2192 total 6 KB (moderate pressure)\n    __shared__ float smem[512];\n    __shared__ float halo[256];\n\n    int idx = blockIdx.x * blockDim.x + threadIdx.x;\n    int tid = threadIdx.x;\n\n    // Load into shared\n    smem[tid] = (idx < n) ? in[idx] : 0.0f;\n\n    // Hazard: write halo WITHOUT syncthreads before reading smem neighbor\n    halo[tid] = smem[tid] * 0.5f;  // reads smem before all threads have stored\n\n    __syncthreads();\n\n    // 3-point stencil \u2014 reads neighbor that may not have been stored yet\n    float left  = (tid > 0)              ? smem[tid - 1] : 0.0f;\n    float right = (tid < blockDim.x - 1) ? smem[tid + 1] : 0.0f;\n    float res   = 0.25f * left + 0.5f * smem[tid] + 0.25f * right + halo[tid];\n\n    if (idx < n) out[idx] = res;\n}",
+    "params": "const float* __restrict__ in, float* __restrict__ out, int n",
+    "block_size": 256,
+    "n_elements": 16777216,
+    "iters": 0,
+    "active": true,
+    "added": "2026-02-23T14:05:09"
+  },
+  {
+    "name": "tiny_block_saxpy",
+    "code": "__global__ void tiny_block_saxpy(const float* __restrict__ a,\n                                  const float* __restrict__ b,\n                                  float* __restrict__ c,\n                                  int n)\n{\n    // Block size 32 = exactly 1 warp; no latency hiding possible\n    int idx = blockIdx.x * blockDim.x + threadIdx.x;\n\n    // Hard-coded loop bound of 32 (warp-size assumption)\n    float acc = 0.0f;\n    for (int i = 0; i < 32; ++i) {\n        acc += 0.001f;\n    }\n\n    if (idx < n)\n        c[idx] = 2.0f * a[idx] + b[idx] + acc;\n}",
+    "params": "const float* __restrict__ a, const float* __restrict__ b, float* __restrict__ c, int n",
+    "block_size": 32,
+    "n_elements": 16777216,
+    "iters": 0,
+    "active": true,
+    "added": "2026-02-23T14:05:09"
+  },
+  {
+    "name": "float4_copy",
+    "code": "__global__ void float4_copy(const float* __restrict__ a,\n                              float* __restrict__ c,\n                              int n)\n{\n    int idx = blockIdx.x * blockDim.x + threadIdx.x;\n    if (idx >= n) return;\n\n    // Vectorised load/store assuming 16-byte alignment (fragility flag)\n    const float4* a4 = (const float4*)a;\n    float4*       c4 = (float4*)c;\n\n    // Each thread handles one float4 (4 floats); n = total_floats / 4\n    float4 v = a4[idx];\n    c4[idx]  = v;\n}",
+    "params": "const float* __restrict__ a, float* __restrict__ c, int n",
+    "block_size": 256,
+    "n_elements": 4194304,
+    "iters": 0,
+    "active": true,
+    "added": "2026-02-23T14:05:09"
+  },
+  {
+    "name": "race_smem_reduce",
+    "code": "__global__ void race_smem_reduce(const float* __restrict__ a,\n                                  float* __restrict__ out,\n                                  int n)\n{\n    __shared__ float sdata[256];\n    int tid = threadIdx.x;\n    int idx = blockIdx.x * blockDim.x + tid;\n\n    sdata[tid] = (idx < n) ? a[idx] : 0.0f;\n    // BUG: missing __syncthreads() here \u2014 race condition\n    // Thread tid reads neighbor written by tid+1 which may not be stored yet\n    float left = (tid > 0) ? sdata[tid - 1] : 0.0f;\n\n    __syncthreads();\n\n    // Tree reduction\n    for (int s = blockDim.x / 2; s > 0; s >>= 1) {\n        if (tid < s)\n            sdata[tid] += sdata[tid + s];\n        __syncthreads();\n    }\n\n    if (tid == 0) out[blockIdx.x] = sdata[0] + left;\n}",
+    "params": "const float* __restrict__ a, float* __restrict__ out, int n",
+    "block_size": 256,
+    "n_elements": 16777216,
+    "iters": 0,
+    "active": true,
+    "added": "2026-02-23T14:05:09"
   }
 ]

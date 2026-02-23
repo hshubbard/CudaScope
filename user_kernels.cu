@@ -22,3 +22,155 @@ __global__ void tiled_transpose(const float* __restrict__ in,
         out[y * width + x] = tile[threadIdx.x][threadIdx.y];
 }
 
+// ---- atomic_histogram (added 2026-02-23T14:05:09) ----
+__global__ void atomic_histogram(const float* __restrict__ a,
+                                  float* __restrict__ bins,
+                                  int n)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+
+    // Warp-lane extraction: hard-coded mask assuming warpSize == 32
+    int lane = threadIdx.x & 31;
+    float val = a[idx];
+
+    // Thread-divergent bin selection (each thread takes a different bin)
+    int bin = (int)(val * 8.0f) & 7;
+
+    // Non-deterministic FP accumulation via global atomic
+    atomicAdd(&bins[bin], val);
+
+    // Multiple divergent branches across warp lanes — serialises the warp
+    if (lane < 8) {
+        atomicAdd(&bins[bin ^ 1], val * 0.5f);
+    } else if (lane < 16) {
+        atomicAdd(&bins[bin ^ 2], val * 0.25f);
+    } else if (lane < 24) {
+        atomicAdd(&bins[bin ^ 3], val * 0.125f);
+    } else {
+        atomicAdd(&bins[bin ^ 4], val * 0.0625f);
+    }
+}
+
+// ---- warp_reduce_shuffle (added 2026-02-23T14:05:09) ----
+__global__ void warp_reduce_shuffle(const float* __restrict__ a,
+                                     float* __restrict__ out,
+                                     int n)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    float val = (idx < n) ? a[idx] : 0.0f;
+
+    // Warp-level reduction via shuffle (requires SM 7.0+)
+    val += __shfl_down_sync(0xffffffff, val, 16);
+    val += __shfl_down_sync(0xffffffff, val,  8);
+    val += __shfl_down_sync(0xffffffff, val,  4);
+    val += __shfl_down_sync(0xffffffff, val,  2);
+    val += __shfl_down_sync(0xffffffff, val,  1);
+
+    // Block-level via shared memory
+    __shared__ float smem[8];
+    int lane = threadIdx.x & 31;
+    int wid  = threadIdx.x / 32;
+    if (lane == 0) smem[wid] = val;
+    __syncthreads();
+
+    if (wid == 0) {
+        val = (lane < (blockDim.x / 32)) ? smem[lane] : 0.0f;
+        val += __shfl_down_sync(0xffffffff, val, 4);
+        val += __shfl_down_sync(0xffffffff, val, 2);
+        val += __shfl_down_sync(0xffffffff, val, 1);
+        if (lane == 0) out[blockIdx.x] = val;
+    }
+}
+
+// ---- large_smem_stencil (added 2026-02-23T14:05:09) ----
+__global__ void large_smem_stencil(const float* __restrict__ in,
+                                    float* __restrict__ out,
+                                    int n)
+{
+    // Large shared allocation: 256 * 4 = 1024 floats = 4 KB per block
+    // Plus halo: 512 floats = 2 KB → total 6 KB (moderate pressure)
+    __shared__ float smem[512];
+    __shared__ float halo[256];
+
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int tid = threadIdx.x;
+
+    // Load into shared
+    smem[tid] = (idx < n) ? in[idx] : 0.0f;
+
+    // Hazard: write halo WITHOUT syncthreads before reading smem neighbor
+    halo[tid] = smem[tid] * 0.5f;  // reads smem before all threads have stored
+
+    __syncthreads();
+
+    // 3-point stencil — reads neighbor that may not have been stored yet
+    float left  = (tid > 0)              ? smem[tid - 1] : 0.0f;
+    float right = (tid < blockDim.x - 1) ? smem[tid + 1] : 0.0f;
+    float res   = 0.25f * left + 0.5f * smem[tid] + 0.25f * right + halo[tid];
+
+    if (idx < n) out[idx] = res;
+}
+
+// ---- tiny_block_saxpy (added 2026-02-23T14:05:09) ----
+__global__ void tiny_block_saxpy(const float* __restrict__ a,
+                                  const float* __restrict__ b,
+                                  float* __restrict__ c,
+                                  int n)
+{
+    // Block size 32 = exactly 1 warp; no latency hiding possible
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // Hard-coded loop bound of 32 (warp-size assumption)
+    float acc = 0.0f;
+    for (int i = 0; i < 32; ++i) {
+        acc += 0.001f;
+    }
+
+    if (idx < n)
+        c[idx] = 2.0f * a[idx] + b[idx] + acc;
+}
+
+// ---- float4_copy (added 2026-02-23T14:05:09) ----
+__global__ void float4_copy(const float* __restrict__ a,
+                              float* __restrict__ c,
+                              int n)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+
+    // Vectorised load/store assuming 16-byte alignment (fragility flag)
+    const float4* a4 = (const float4*)a;
+    float4*       c4 = (float4*)c;
+
+    // Each thread handles one float4 (4 floats); n = total_floats / 4
+    float4 v = a4[idx];
+    c4[idx]  = v;
+}
+
+// ---- race_smem_reduce (added 2026-02-23T14:05:09) ----
+__global__ void race_smem_reduce(const float* __restrict__ a,
+                                  float* __restrict__ out,
+                                  int n)
+{
+    __shared__ float sdata[256];
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + tid;
+
+    sdata[tid] = (idx < n) ? a[idx] : 0.0f;
+    // BUG: missing __syncthreads() here — race condition
+    // Thread tid reads neighbor written by tid+1 which may not be stored yet
+    float left = (tid > 0) ? sdata[tid - 1] : 0.0f;
+
+    __syncthreads();
+
+    // Tree reduction
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s)
+            sdata[tid] += sdata[tid + s];
+        __syncthreads();
+    }
+
+    if (tid == 0) out[blockIdx.x] = sdata[0] + left;
+}
+

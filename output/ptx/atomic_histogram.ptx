@@ -1,0 +1,85 @@
+.visible .entry _Z16atomic_histogramPKfPfi(
+	.param .u64 _Z16atomic_histogramPKfPfi_param_0,
+	.param .u64 _Z16atomic_histogramPKfPfi_param_1,
+	.param .u32 _Z16atomic_histogramPKfPfi_param_2
+)
+{
+	.reg .pred 	%p<5>;
+	.reg .f32 	%f<12>;
+	.reg .b32 	%r<10>;
+	.reg .b64 	%rd<22>;
+
+
+	ld.param.u64 	%rd2, [_Z16atomic_histogramPKfPfi_param_0];
+	ld.param.u64 	%rd3, [_Z16atomic_histogramPKfPfi_param_1];
+	ld.param.u32 	%r5, [_Z16atomic_histogramPKfPfi_param_2];
+	cvta.to.global.u64 	%rd1, %rd3;
+	mov.u32 	%r6, %ntid.x;
+	mov.u32 	%r7, %ctaid.x;
+	mov.u32 	%r1, %tid.x;
+	mad.lo.s32 	%r2, %r7, %r6, %r1;
+	setp.ge.s32 	%p1, %r2, %r5;
+	@%p1 bra 	$L__BB1_8;
+
+	cvta.to.global.u64 	%rd4, %rd2;
+	mul.wide.s32 	%rd5, %r2, 4;
+	add.s64 	%rd6, %rd4, %rd5;
+	ld.global.nc.f32 	%f1, [%rd6];
+	mul.f32 	%f2, %f1, 0f41000000;
+	cvt.rzi.s32.f32 	%r8, %f2;
+	and.b32  	%r3, %r8, 7;
+	shl.b32 	%r9, %r8, 2;
+	cvt.u64.u32 	%rd7, %r9;
+	and.b64  	%rd8, %rd7, 28;
+	add.s64 	%rd9, %rd1, %rd8;
+	atom.global.add.f32 	%f3, [%rd9], %f1;
+	and.b32  	%r4, %r1, 31;
+	setp.lt.u32 	%p2, %r4, 8;
+	@%p2 bra 	$L__BB1_7;
+	bra.uni 	$L__BB1_2;
+
+$L__BB1_7:
+	mul.wide.u32 	%rd19, %r3, 4;
+	xor.b64  	%rd20, %rd19, 4;
+	add.s64 	%rd21, %rd1, %rd20;
+	mul.f32 	%f10, %f1, 0f3F000000;
+	atom.global.add.f32 	%f11, [%rd21], %f10;
+	bra.uni 	$L__BB1_8;
+
+$L__BB1_2:
+	setp.lt.u32 	%p3, %r4, 16;
+	@%p3 bra 	$L__BB1_6;
+	bra.uni 	$L__BB1_3;
+
+$L__BB1_6:
+	mul.wide.u32 	%rd16, %r3, 4;
+	xor.b64  	%rd17, %rd16, 8;
+	add.s64 	%rd18, %rd1, %rd17;
+	mul.f32 	%f8, %f1, 0f3E800000;
+	atom.global.add.f32 	%f9, [%rd18], %f8;
+	bra.uni 	$L__BB1_8;
+
+$L__BB1_3:
+	setp.lt.u32 	%p4, %r4, 24;
+	@%p4 bra 	$L__BB1_5;
+	bra.uni 	$L__BB1_4;
+
+$L__BB1_5:
+	mul.wide.u32 	%rd13, %r3, 4;
+	xor.b64  	%rd14, %rd13, 12;
+	add.s64 	%rd15, %rd1, %rd14;
+	mul.f32 	%f6, %f1, 0f3E000000;
+	atom.global.add.f32 	%f7, [%rd15], %f6;
+	bra.uni 	$L__BB1_8;
+
+$L__BB1_4:
+	mul.wide.u32 	%rd10, %r3, 4;
+	xor.b64  	%rd11, %rd10, 16;
+	add.s64 	%rd12, %rd1, %rd11;
+	mul.f32 	%f4, %f1, 0f3D800000;
+	atom.global.add.f32 	%f5, [%rd12], %f4;
+
+$L__BB1_8:
+	ret;
+
+}

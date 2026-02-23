@@ -1,0 +1,27 @@
+{
+  "tiled_transpose": [],
+  "atomic_histogram": [],
+  "warp_reduce_shuffle": [],
+  "large_smem_stencil": [
+    {
+      "kernel_name": "large_smem_stencil",
+      "location": "ptx:L62",
+      "category": "timing_dependency",
+      "severity": "high",
+      "description": "Conditional branch driven by a shared-memory load (`ld.shared` -> `setp` -> `bra`) without a preceding `bar.sync`. If the shared memory was written by another thread, the branch outcome depends on when that write completes \u2014 a timing-dependent control-flow race.",
+      "score": 10
+    }
+  ],
+  "tiny_block_saxpy": [],
+  "float4_copy": [],
+  "race_smem_reduce": [
+    {
+      "kernel_name": "race_smem_reduce",
+      "location": "ptx:L39",
+      "category": "timing_dependency",
+      "severity": "high",
+      "description": "Conditional branch driven by a shared-memory load (`ld.shared` -> `setp` -> `bra`) without a preceding `bar.sync`. If the shared memory was written by another thread, the branch outcome depends on when that write completes \u2014 a timing-dependent control-flow race.",
+      "score": 10
+    }
+  ]
+}

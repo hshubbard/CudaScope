@@ -37,6 +37,7 @@ OUTPUTS
 
 import os
 import sys
+import subprocess
 import pandas as pd
 import numpy as np
 import matplotlib
@@ -78,6 +79,53 @@ if os.path.isfile(_CONFIG_FILE):
     THRESH_BRANCH_RATIO    = float(_cfg.get("thresh_branch_ratio",    THRESH_BRANCH_RATIO))
     THRESH_ARITH_INTENSITY = float(_cfg.get("thresh_arith_intensity", THRESH_ARITH_INTENSITY))
     THRESH_BW_EFFICIENCY   = float(_cfg.get("thresh_bw_efficiency",   THRESH_BW_EFFICIENCY))
+
+
+# ---------------------------------------------------------------------------
+# Hardware peak bandwidth query
+# ---------------------------------------------------------------------------
+
+def _query_peak_bw_GBs() -> float:
+    """
+    Query theoretical peak memory bandwidth from the GPU via nvidia-smi.
+
+    Formula: memClockRate_MHz * memoryBusWidth_bits * 2 (DDR) / 8 bits-per-byte / 1000
+    Returns GB/s.  Falls back to 200 GB/s if nvidia-smi is unavailable.
+
+    This is always used as the peak reference — it is the hardware datasheet
+    number, stable across runs regardless of array size, thermal state, or which
+    kernels are included in the benchmark.
+    """
+    _OFFLINE_FALLBACK = 200.0  # safe floor used only if nvidia-smi is unreachable
+    try:
+        mem_clock_str = subprocess.check_output(
+            ["nvidia-smi",
+             "--query-gpu=clocks.max.memory",
+             "--format=csv,noheader,nounits"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        ).strip().splitlines()[0]
+        bus_width_str = subprocess.check_output(
+            ["nvidia-smi",
+             "--query-gpu=memory.bus_width",
+             "--format=csv,noheader,nounits"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        ).strip().splitlines()[0]
+        mem_clock_MHz = float(mem_clock_str)   # MHz
+        bus_width_bits = float(bus_width_str)  # bits
+        # Factor of 2 for DDR (double data rate); /8 converts bits→bytes; /1000 MHz→GHz
+        peak = mem_clock_MHz * bus_width_bits * 2 / 8 / 1000
+        print(f"[INFO] Hardware peak BW from nvidia-smi: "
+              f"{mem_clock_MHz:.0f} MHz × {bus_width_bits:.0f}-bit bus × 2 DDR "
+              f"= {peak:.1f} GB/s")
+        return peak
+    except Exception as exc:
+        print(f"[WARN] nvidia-smi query failed ({exc}); "
+              f"using fallback peak BW = {_OFFLINE_FALLBACK} GB/s")
+        return _OFFLINE_FALLBACK
 
 
 # ---------------------------------------------------------------------------
@@ -148,17 +196,19 @@ def derive_metrics(rt: pd.DataFrame, ptx: pd.DataFrame) -> pd.DataFrame:
         np.inf
     )
 
-    # Bandwidth efficiency: kernel BW / reference peak BW.
-    # We use coalesced_add as the peak reference — it represents the hardware's
-    # achievable bandwidth for a simple element-wise kernel at the same N.
-    # If coalesced_add is not in the dataset (user-only run), fall back to max.
-    # Source: derived from measured runtime + measured array sizes
-    coalesced_rows = df[df["kernel"] == "coalesced_add"]["approx_bandwidth_GBs"]
-    if not coalesced_rows.empty:
-        peak_bw = float(coalesced_rows.iloc[0])
-    else:
-        # Exclude obviously-wrong outliers: cap at 99th percentile
-        peak_bw = float(df["approx_bandwidth_GBs"].quantile(0.99))
+    # Bandwidth efficiency: kernel BW / theoretical peak BW.
+    # We always use the theoretical peak from nvidia-smi as the reference:
+    #   peak = memClockRate_MHz * memoryBusWidth_bits * 2 (DDR) / 8 / 1000
+    # This is a stable, hardware-specific value (the datasheet number) that
+    # doesn't vary with array size, thermal state, or which kernels are in the
+    # run.  Using coalesced_add's measured BW as the reference is worse because:
+    #   - it's a lower bound (~80-90% of peak), so faster kernels exceed 1.0
+    #   - it varies with N, thermal state, and clock boost at measurement time
+    #   - it requires the built-in kernel to be present in the run
+    # If nvidia-smi is unavailable, fall back to 200 GB/s (safe floor for any
+    # discrete GPU made after 2018) so the tool still works offline.
+    # Source: hardware spec via nvidia-smi
+    peak_bw = _query_peak_bw_GBs()
     peak_bw = max(peak_bw, 1.0)  # avoid division by zero
     df["bw_efficiency"] = df["approx_bandwidth_GBs"] / peak_bw
 
@@ -201,8 +251,11 @@ def classify_bottleneck(row) -> tuple[str, str]:
     # These kernels have elevated branch ratios from loop conditions (e.g.
     # `if (threadIdx.x < s)`) that are NOT true warp divergence — all active
     # threads in a warp follow the same path at each step of a tree reduction.
-    # Detect by: shared_loads + shared_stores > 0 (PTX static).
-    if (sh_loads + sh_stores) > 0:
+    # Detect by: shared_loads + shared_stores >= 4 (PTX static).
+    # Threshold of 4 excludes kernels that only use smem as a trivial staging
+    # buffer (e.g. 8-element shuffle-then-smem reduction where smem accounts for
+    # 1 load + 1 store), and correctly identifies genuine tiling/reduction kernels.
+    if (sh_loads + sh_stores) >= 4:
         explanation = (
             f"Kernel uses shared memory: shared_loads={sh_loads}, "
             f"shared_stores={sh_stores} [SOURCE: PTX static]. "
@@ -570,6 +623,14 @@ def main():
 
     print("Classifying bottlenecks ...")
     df = apply_classifier(df)
+
+    # Write enriched runtimes back so other tools (dashboard, summary_report)
+    # can read bottleneck and approx_bandwidth_GBs without re-running classify.
+    enriched_cols = ["kernel", "n_elements", "mean_us", "std_us",
+                     "approx_bandwidth_GBs", "bottleneck"]
+    df[enriched_cols].to_csv(
+        os.path.join(DATA_DIR, "runtimes.csv"), index=False
+    )
 
     print("\n--- Derived metrics ---")
     print(df[["kernel", "mean_us", "runtime_share",

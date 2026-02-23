@@ -1,0 +1,70 @@
+{
+  "tiled_transpose": [
+    {
+      "kernel_name": "tiled_transpose",
+      "location": "ptx:reg_decl",
+      "category": "register_pressure",
+      "severity": "low",
+      "description": "PTX declares 34 registers per thread. This is within bounds but will limit occupancy to ~5% on a 64K-register SM. Monitor with Nsight Compute.",
+      "score": 2
+    }
+  ],
+  "atomic_histogram": [
+    {
+      "kernel_name": "atomic_histogram",
+      "location": "ptx:reg_decl",
+      "category": "register_pressure",
+      "severity": "low",
+      "description": "PTX declares 44 registers per thread. This is within bounds but will limit occupancy to ~4% on a 64K-register SM. Monitor with Nsight Compute.",
+      "score": 2
+    },
+    {
+      "kernel_name": "atomic_histogram",
+      "location": "ptx:atom_density",
+      "category": "sm_monopolization",
+      "severity": "medium",
+      "description": "5 global atomic instructions (8% of total). Moderate atomic density may cause memory-bus contention on high-thread-count launches. Consider warp-level pre-reduction before the global atomic to reduce contention.",
+      "score": 5
+    },
+    {
+      "kernel_name": "atomic_histogram",
+      "location": "ptx:branch_density",
+      "category": "sm_monopolization",
+      "severity": "medium",
+      "description": "Branch instruction density 17% (10/59). High branch density in PTX indicates frequent control flow changes; if warps diverge at these branches, the SM serialises both paths, reducing the effective thread count and leaving other warps starved.",
+      "score": 5
+    }
+  ],
+  "warp_reduce_shuffle": [
+    {
+      "kernel_name": "warp_reduce_shuffle",
+      "location": "ptx:reg_decl",
+      "category": "register_pressure",
+      "severity": "medium",
+      "description": "PTX declares 77 registers per thread. On SM 7.0\u20139.0 (64 K regs / SM), more than 64 regs/thread limits concurrent warps to <= 32 (50% occupancy). Consider `__launch_bounds__(block_size, min_blocks)` to give the compiler a register budget.",
+      "score": 5
+    }
+  ],
+  "large_smem_stencil": [
+    {
+      "kernel_name": "large_smem_stencil",
+      "location": "ptx:reg_decl",
+      "category": "register_pressure",
+      "severity": "low",
+      "description": "PTX declares 42 registers per thread. This is within bounds but will limit occupancy to ~4% on a 64K-register SM. Monitor with Nsight Compute.",
+      "score": 2
+    }
+  ],
+  "tiny_block_saxpy": [],
+  "float4_copy": [],
+  "race_smem_reduce": [
+    {
+      "kernel_name": "race_smem_reduce",
+      "location": "ptx:reg_decl",
+      "category": "register_pressure",
+      "severity": "low",
+      "description": "PTX declares 38 registers per thread. This is within bounds but will limit occupancy to ~5% on a 64K-register SM. Monitor with Nsight Compute.",
+      "score": 2
+    }
+  ]
+}
